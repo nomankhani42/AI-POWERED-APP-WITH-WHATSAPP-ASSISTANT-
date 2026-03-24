@@ -1,0 +1,20 @@
+[project]
+name = "support-agent"
+version = "0.1.0"
+description = "FastAPI-based support agent with WhatsApp Meta integration"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.0.0",
+    "motor>=3.6.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    "openai-agents[voice,litellm]>=0.0.7",
+    "upstash-redis>=1.1.0",
+    "pymongo>=4.16.0",
+    "numpy>=2.4.3",
+    "pydub>=0.25.1",
+    "azure-cognitiveservices-speech>=1.40.0",
+]

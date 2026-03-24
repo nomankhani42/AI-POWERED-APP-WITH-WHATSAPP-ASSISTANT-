@@ -1,0 +1,27 @@
+services:
+  # ---------- MongoDB ----------
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"          # optional: expose to host for debugging
+    volumes:
+      - mongo_data:/data/db
+
+  # ---------- Support Agent API ----------
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env                   # all your secrets / config
+    environment:
+      # Override MONGO_URI so the app connects to the mongo container
+      # (container name "mongo" resolves via Docker's internal DNS)
+      - MONGO_URI=mongodb://mongo:27017
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:
