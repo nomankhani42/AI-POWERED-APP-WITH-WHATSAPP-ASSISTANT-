@@ -10,6 +10,7 @@ Outgoing messages are stored in an in-memory list (``messages_store``).
 
 from datetime import datetime
 from typing import Any
+import io
 
 import httpx
 
@@ -236,6 +237,68 @@ async def create_template(payload: dict[str, Any]) -> dict[str, Any]:
         resp = await client.post(url, json=payload, headers=_headers())
         resp.raise_for_status()
         return resp.json()
+
+
+async def send_voice_note(to: str, text: str, voice: str = "nova") -> dict[str, Any]:
+    """Generate TTS from text and send as a WhatsApp voice note (OGG/Opus).
+
+    Args:
+        to: Recipient WhatsApp phone number.
+        text: Text to synthesise into speech.
+        voice: OpenAI TTS voice (nova/shimmer = female, alloy/echo/fable/onyx = other).
+
+    Returns:
+        Meta API response dict.
+    """
+    from pydub import AudioSegment
+    from services.ai_services.tts_openai import synthesise_to_bytes
+
+    # TTS → raw PCM (24 kHz, 16-bit, mono)
+    pcm_bytes = await synthesise_to_bytes(text, voice=voice)
+
+    # PCM → OGG/Opus (WhatsApp voice note format)
+    segment = AudioSegment(
+        data=pcm_bytes,
+        sample_width=2,
+        frame_rate=24_000,
+        channels=1,
+    )
+    ogg_buf = io.BytesIO()
+    try:
+        segment.export(ogg_buf, format="ogg", codec="libopus")
+    except Exception:
+        # Fallback: plain OGG without explicit codec
+        ogg_buf = io.BytesIO()
+        segment.export(ogg_buf, format="ogg")
+    ogg_bytes = ogg_buf.getvalue()
+
+    # Upload to Meta media endpoint
+    media_id = await upload_media(ogg_bytes, "audio/ogg; codecs=opus")
+
+    # Send as audio message
+    url = f"{WHATSAPP_API_BASE}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "audio",
+        "audio": {"id": media_id},
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, json=payload, headers=_headers())
+        if resp.status_code != 200:
+            raise Exception(f"Meta API error ({resp.status_code}): {resp.text}")
+        data = resp.json()
+
+    wa_message_id = data.get("messages", [{}])[0].get("id", "")
+    _save_message(
+        sender=WHATSAPP_PHONE_NUMBER_ID,
+        recipient=to,
+        message_body=f"[voice: {text[:60]}]",
+        message_type="audio",
+        direction="outgoing",
+        wa_message_id=wa_message_id,
+    )
+    return data
 
 
 async def delete_template(name: str) -> dict[str, Any]:

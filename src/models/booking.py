@@ -32,6 +32,8 @@ class BookingStatus(StrEnum):
 class BookedVia(StrEnum):
     """Channel through which the booking was made."""
     WHATSAPP = "whatsapp"
+    WHATSAPP_CALL = "whatsapp_call"
+    APP = "app"
     WEB = "web"
     API = "api"
 

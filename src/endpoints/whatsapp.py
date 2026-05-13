@@ -1,8 +1,11 @@
 """WhatsApp API endpoint routes."""
 
+import json
+from collections.abc import AsyncIterable
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File
+from sse_starlette.sse import EventSourceResponse
 
 from config import WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN
 from models.whatsapp import (
@@ -25,6 +28,7 @@ from services.whatsapp import (
     send_text_message,
     upload_media,
 )
+from services.ai_services.agent import get_agent_response_stream
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
 
@@ -54,6 +58,66 @@ async def receive_webhook(request: Request):
     from services.webhook_handler import handle_webhook
     await handle_webhook(payload, source="/whatsapp/webhook")
     return {"status": "ok"}
+
+
+# -- SSE Streaming Chat -----------------------------------------------------
+
+from pydantic import BaseModel
+
+
+class ChatStreamRequest(BaseModel):
+    """Body for the streaming chat endpoint."""
+    to: str                       # WhatsApp number (sender)
+    message: str                  # User's text message
+    send_whatsapp: bool = True    # Also deliver final reply via WhatsApp
+
+
+@router.post("/chat/stream")
+async def stream_chat(req: ChatStreamRequest):
+    """Stream the agent's response token-by-token over SSE.
+
+    Event types:
+        ``token``  – incremental text delta (``data`` = the text fragment)
+        ``done``   – final complete message (``data`` = JSON with full text)
+        ``error``  – something went wrong (``data`` = error message)
+
+    After the stream ends, the full message is optionally sent to the
+    user's WhatsApp number (controlled by ``send_whatsapp``).
+    """
+
+    async def _generate():
+        full_reply_parts: list[str] = []
+        try:
+            async for delta in get_agent_response_stream(
+                req.message, whatsapp_number=req.to
+            ):
+                full_reply_parts.append(delta)
+                yield {
+                    "event": "token",
+                    "data": delta,
+                }
+
+            full_reply = "".join(full_reply_parts)
+
+            # Optionally send the complete reply to WhatsApp
+            if req.send_whatsapp and full_reply.strip():
+                try:
+                    await send_text_message(to=req.to, body=full_reply)
+                except Exception as wa_err:
+                    print(f">>> SSE: Failed to send WhatsApp reply: {wa_err}")
+
+            yield {
+                "event": "done",
+                "data": json.dumps({"text": full_reply}),
+            }
+
+        except Exception as exc:
+            yield {
+                "event": "error",
+                "data": str(exc),
+            }
+
+    return EventSourceResponse(_generate())
 
 
 # -- Send Messages ----------------------------------------------------------

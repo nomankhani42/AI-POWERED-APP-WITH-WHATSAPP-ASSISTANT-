@@ -1,48 +1,121 @@
-# Python
+# ─── Python ────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
+*.pyd
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
-*.egg
+develop-eggs/
+eggs/
+.eggs/
+sdist/
+wheels/
+share/python-wheels/
+*.manifest
+*.spec
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Virtual environment
+# ─── Virtual environments ──────────────────────────────────────────────
 .venv/
 venv/
 env/
+ENV/
+env.bak/
+venv.bak/
 
-# Environment variables
+# ─── Environment / secrets ─────────────────────────────────────────────
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.crt
 
-# IDE
+# ─── uv ────────────────────────────────────────────────────────────────
+uv.lock
+
+# ─── Editors / IDEs ────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
+*.swn
 *~
+*.sublime-project
+*.sublime-workspace
 
-# OS
+# ─── OS noise ──────────────────────────────────────────────────────────
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+Desktop.ini
 
-# uv
-uv.lock
-
-# Database
-*.db
-*.sqlite3
-
-# Logs
+# ─── Logs ──────────────────────────────────────────────────────────────
 *.log
+logs/
+*.log.*
 
-# Frontend
+# ─── Databases / local data ────────────────────────────────────────────
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+conversations.db
+
+# ─── Testing / coverage ────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# ─── Type checkers / linters ───────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ─── Jupyter ───────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Audio / media scratch files ───────────────────────────────────────
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.opus
+*.webm
+*.mp4
+tmp/
+tmp_*
+
+# Accidental directories Claude Code / FastAPI sometimes leaves behind
+# when a path like "[Call ...]" is mis-quoted by a shell command.
+[[]Call*
+
+# ─── Frontend (separately managed git repo, not tracked here) ──────────
 Frontend/
 
-# Docker
+# ─── Docker ────────────────────────────────────────────────────────────
 .dockerignore
 
-# Claude
+# ─── Claude Code / agent metadata ──────────────────────────────────────
 .claude/
+CLAUDE.local.md

@@ -1,12 +1,20 @@
 """
-part2_stt.py — Groq Whisper Speech-to-Text (Function-Modular)
-==============================================================
+part2_stt.py — Groq Whisper Speech-to-Text
+============================================
 
-All business logic lives in **standalone functions**.  The thin
-``_GroqWhisperSTTWrapper`` subclass exists only because the OpenAI
-Agents SDK's ``VoicePipeline`` requires an object that implements the
+All business logic lives in **standalone functions**. The thin
+``_GroqSTTWrapper`` subclass exists only because the OpenAI Agents
+SDK's ``VoicePipeline`` requires an object that implements the
 ``STTModel`` abstract interface — it delegates every call to the public
 functions below.
+
+Why Groq Whisper (whisper-large-v3-turbo)?
+------------------------------------------
+* ~200 ms latency — fast enough for live voice calls.
+* Prompt field works like original Whisper (vocabulary biasing /
+  previous-transcript context) — no instruction-echo risk.
+* OpenAI-compatible API — same SDK call, only base_url + key differ.
+* Supports temperature, verbose_json, and all standard Whisper params.
 
 Public API
 ----------
@@ -15,18 +23,8 @@ Public API
 * ``compute_rms``        — RMS energy of an int16 buffer
 * ``numpy_to_wav_bytes`` — numpy → in-memory WAV file
 
-Free-tier limits (daily reset)
-------------------------------
-    20 req / min · 7 200 audio-sec / hour · 28 800 audio-sec / day
-
 Environment variable:
     GROQ_API_KEY  — from https://console.groq.com/keys
-
-Usage::
-
-    from part2_stt import create_stt_model, transcribe_audio
-    stt = create_stt_model()                    # for VoicePipeline
-    text = await transcribe_audio(audio_input)   # standalone call
 """
 
 from __future__ import annotations
@@ -38,6 +36,7 @@ import wave
 from uuid import uuid4
 
 import numpy as np
+from openai import AsyncOpenAI
 
 from agents.voice import (
     AudioInput,
@@ -47,22 +46,48 @@ from agents.voice import (
     StreamedTranscriptionSession,
 )
 
-from part1_groq_client import create_groq_client
+from config import GROQ_API_KEY
+
+
+def _create_groq_client() -> AsyncOpenAI:
+    """Async Groq client (OpenAI-compatible) used for Whisper transcription."""
+    if not GROQ_API_KEY:
+        raise EnvironmentError(
+            "GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys"
+        )
+    return AsyncOpenAI(
+        api_key=GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
+        timeout=15.0,
+        max_retries=2,
+    )
 
 
 # ── constants ────────────────────────────────────────────────────────
 
 _MAX_FILE_BYTES: int = 25 * 1024 * 1024
-"""25 MB — Groq hard limit on upload size."""
+"""25 MB — Groq hard limit on transcription upload size."""
 
-_SILENCE_RMS_THRESHOLD: float = 50.0
-"""RMS amplitude below which audio is considered silent."""
+_SILENCE_RMS_THRESHOLD: float = 200.0
+"""RMS amplitude below which audio is considered silent (0–32768 scale).
+200 catches genuine near-silence while still allowing soft speech through.
+"""
 
 _RETRY_WAIT_SECS: float = 2.0
 """Seconds to wait before retrying after a 429 rate-limit response."""
 
 _MAX_RETRIES: int = 3
 """Maximum retry attempts on 429 errors."""
+
+_DEFAULT_PROMPT: str | None = None
+"""No default prompt — keep None unless you have a tested vocabulary list.
+Groq Whisper treats the prompt as a previous-transcript context hint (not
+an instruction), so it is less likely to echo than gpt-4o-mini-transcribe,
+but a bad prompt can still bias transcription unexpectedly."""
+
+_DEFAULT_LANGUAGE: str = "en"
+"""Locked to English. Switch to None for auto-detect if callers mix
+languages and Groq handles the code-switching correctly in testing."""
 
 
 # ── helper functions ─────────────────────────────────────────────────
@@ -140,19 +165,13 @@ async def transcribe_audio(
     settings: STTModelSettings | None = None,
     *,
     model: str = "whisper-large-v3-turbo",
-    language: str | None = None,
-    prompt: str | None = None,
-    temperature: float = 0.0,
+    language: str | None = _DEFAULT_LANGUAGE,
+    prompt: str | None = _DEFAULT_PROMPT,
     response_format: str = "json",
     silence_threshold: float = _SILENCE_RMS_THRESHOLD,
-    client=None,
-    api_key: str | None = None,
+    client: AsyncOpenAI | None = None,
 ) -> str:
     """Transcribe an audio buffer to text via Groq Whisper.
-
-    This is the **standalone** transcription function containing all
-    business logic (silence gate, settings merge, WAV conversion, API
-    call with retry).
 
     Parameters
     ----------
@@ -161,21 +180,20 @@ async def transcribe_audio(
     settings : STTModelSettings | None
         Runtime overrides — non-None fields take priority.
     model : str
-        Groq Whisper model identifier.
+        Groq Whisper model. ``whisper-large-v3-turbo`` (default) is the
+        best balance of speed and accuracy. Use ``whisper-large-v3`` for
+        maximum accuracy at slightly higher latency.
     language : str | None
         ISO 639-1 code or ``None`` for auto-detect.
     prompt : str | None
-        Context hint for the model (max 224 tokens).
-    temperature : float
-        Decoding randomness (0.0 = deterministic).
+        Previous-transcript context hint (Whisper style) — biases
+        vocabulary without echoing instructions into the output.
     response_format : str
-        ``"json"`` | ``"text"`` | ``"verbose_json"``.
+        ``"json"``, ``"text"``, or ``"verbose_json"``.
     silence_threshold : float
         RMS below this → return ``""`` without calling the API.
     client : AsyncOpenAI | None
-        Pre-built Groq client.  ``None`` → new one via factory.
-    api_key : str | None
-        Groq API key (used only when ``client`` is ``None``).
+        Pre-built client. ``None`` → Groq client via factory.
 
     Returns
     -------
@@ -192,18 +210,13 @@ async def transcribe_audio(
     # ── resolve settings (runtime overrides win) ─────────────────
     resolved_language = settings.language if settings.language else language
     resolved_prompt = settings.prompt if settings.prompt else prompt
-    resolved_temperature = (
-        settings.temperature
-        if settings.temperature is not None
-        else temperature
-    )
 
     # ── numpy → WAV bytes ────────────────────────────────────────
-    frame_rate = getattr(audio_input, "frame_rate", 24_000)
+    frame_rate = getattr(audio_input, "frame_rate", 16_000)
     wav_bytes = numpy_to_wav_bytes(audio_input.buffer, sample_rate=frame_rate)
 
     # ── ensure client ────────────────────────────────────────────
-    groq_client = client or create_groq_client(api_key=api_key)
+    groq_client = client or _create_groq_client()
 
     # ── API call with retry on 429 ───────────────────────────────
     last_exc: Exception | None = None
@@ -214,7 +227,6 @@ async def transcribe_audio(
                 file=wav_bytes,
                 language=resolved_language,
                 prompt=resolved_prompt,
-                temperature=resolved_temperature,
                 response_format=response_format,
             )
             return result.text
@@ -236,31 +248,21 @@ async def transcribe_audio(
 
 def create_stt_model(
     model: str = "whisper-large-v3-turbo",
-    language: str | None = None,
-    prompt: str | None = None,
-    temperature: float = 0.0,
+    language: str | None = _DEFAULT_LANGUAGE,
+    prompt: str | None = _DEFAULT_PROMPT,
     response_format: str = "json",
     silence_threshold: float = _SILENCE_RMS_THRESHOLD,
-    api_key: str | None = None,
 ) -> STTModel:
-    """Create and return an ``STTModel`` for use with ``VoicePipeline``.
+    """Create and return a Groq Whisper ``STTModel``.
 
-    This is the **recommended** way to obtain an STT instance.
     All parameters are forwarded to ``transcribe_audio`` on each call.
-
-    Returns
-    -------
-    STTModel
-        Thin wrapper compatible with VoicePipeline.
     """
-    return _GroqWhisperSTTWrapper(
+    return _GroqSTTWrapper(
         model=model,
         language=language,
         prompt=prompt,
-        temperature=temperature,
         response_format=response_format,
         silence_threshold=silence_threshold,
-        api_key=api_key,
     )
 
 
@@ -268,26 +270,23 @@ def create_stt_model(
 # VoicePipeline requires an object implementing STTModel.
 # This wrapper delegates ALL logic to the standalone functions above.
 
-class _GroqWhisperSTTWrapper(STTModel):
-    """Minimal STTModel adapter — delegates to ``transcribe_audio``."""
+class _GroqSTTWrapper(STTModel):
+    """Minimal STTModel adapter for Groq Whisper — delegates to ``transcribe_audio``."""
 
     def __init__(
         self,
         model: str = "whisper-large-v3-turbo",
-        language: str | None = None,
-        prompt: str | None = None,
-        temperature: float = 0.0,
+        language: str | None = _DEFAULT_LANGUAGE,
+        prompt: str | None = _DEFAULT_PROMPT,
         response_format: str = "json",
         silence_threshold: float = _SILENCE_RMS_THRESHOLD,
-        api_key: str | None = None,
     ) -> None:
         self._model = model
         self._language = language
         self._prompt = prompt
-        self._temperature = temperature
         self._response_format = response_format
         self._silence_threshold = silence_threshold
-        self._client = create_groq_client(api_key=api_key)
+        self._client = _create_groq_client()
 
     @property
     def model_name(self) -> str:
@@ -306,7 +305,6 @@ class _GroqWhisperSTTWrapper(STTModel):
             model=self._model,
             language=self._language,
             prompt=self._prompt,
-            temperature=self._temperature,
             response_format=self._response_format,
             silence_threshold=self._silence_threshold,
             client=self._client,
@@ -320,13 +318,9 @@ class _GroqWhisperSTTWrapper(STTModel):
         trace_include_sensitive_audio_data: bool,
     ) -> StreamedTranscriptionSession:
         raise NotImplementedError(
-            "Groq Whisper does not support streaming transcription.  "
+            "Streaming transcription not wired up here. "
             "Use AudioInput (push-to-talk) instead of StreamedAudioInput."
         )
-
-
-# ── backward compatibility alias ─────────────────────────────────────
-GroqWhisperSTT = _GroqWhisperSTTWrapper
 
 
 # ── self-test ────────────────────────────────────────────────────────

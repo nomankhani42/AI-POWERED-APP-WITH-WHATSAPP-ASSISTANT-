@@ -68,11 +68,38 @@ class UpstashSession(SessionABC):
     # -- SessionABC interface ----------------------------------------------
 
     async def get_items(self, limit: int | None = None) -> List[TResponseInputItem]:
-        """Retrieve conversation history for this session."""
+        """Retrieve conversation history for this session.
+
+        Caps to the last ``limit`` (default 20) items and then removes
+        any orphaned ``function_call_output`` entries whose matching
+        tool-call ID is no longer present — preventing OpenAI 400
+        errors about missing call IDs.
+        """
         items = await self._load()
-        if limit is not None:
-            items = items[-limit:]
-        return items
+        # Always cap history to keep token count manageable
+        max_items = limit or 20
+        if len(items) > max_items:
+            items = items[-max_items:]
+
+        # Collect all tool-call IDs that exist in the truncated window
+        valid_call_ids: set[str] = set()
+        for item in items:
+            # Items with type "function_call" carry a "call_id"
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                cid = item.get("call_id")
+                if cid:
+                    valid_call_ids.add(cid)
+
+        # Drop any function_call_output whose call_id is missing
+        sanitized = []
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "function_call_output":
+                cid = item.get("call_id")
+                if cid and cid not in valid_call_ids:
+                    continue  # orphaned output — skip it
+            sanitized.append(item)
+
+        return sanitized
 
     async def add_items(self, items: List[TResponseInputItem]) -> None:
         """Append new items and refresh TTL."""

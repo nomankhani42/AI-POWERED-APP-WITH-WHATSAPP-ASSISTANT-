@@ -17,4 +17,6 @@ dependencies = [
     "numpy>=2.4.3",
     "pydub>=0.25.1",
     "azure-cognitiveservices-speech>=1.40.0",
+    "bcrypt>=5.0.0",
+    "aiortc>=1.14.0",
 ]

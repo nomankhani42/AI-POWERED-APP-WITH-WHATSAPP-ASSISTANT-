@@ -20,7 +20,13 @@ class UserContext:
             launching the agent.
         customer_id: Resolved after the first DB lookup.  May remain
             ``None`` for brand-new customers until upsert runs.
+        channel: Source channel — ``whatsapp``, ``app``, or ``web``.
+        full_name: Customer's display name (pre-filled from app context).
+        email: Customer's email (pre-filled from app context).
     """
 
     whatsapp_number: str
     customer_id: str | None = None
+    channel: str = "whatsapp"
+    full_name: str = ""
+    email: str = ""

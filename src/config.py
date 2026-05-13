@@ -61,4 +61,15 @@ UPSTASH_REDIS_REST_TOKEN: str = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
 # SQLite session DB for agent conversation memory
 SQLITE_SESSION_DB: str = os.getenv("SQLITE_SESSION_DB", "conversations.db")
 
+# WebRTC TURN/ICE — required for WhatsApp Business Calling when the server
+# is behind NAT. STUN alone is not enough for symmetric NATs. Use a public
+# TURN server (e.g. openrelay.metered.ca, Cloudflare TURN, or your own coturn).
+TURN_URL: str = os.getenv("TURN_URL", "")
+TURN_USERNAME: str = os.getenv("TURN_USERNAME", "")
+TURN_CREDENTIAL: str = os.getenv("TURN_CREDENTIAL", "")
+
+# Optional fixed UDP port range for aiortc media (helps with firewall rules).
+# Format: "min-max" (e.g. "50000-50100"). Empty = let aiortc pick at random.
+WEBRTC_UDP_PORT_RANGE: str = os.getenv("WEBRTC_UDP_PORT_RANGE", "")
+
 WHATSAPP_API_BASE = "https://graph.facebook.com/v21.0"

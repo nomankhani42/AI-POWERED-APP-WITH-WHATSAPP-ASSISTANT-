@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -15,6 +20,11 @@ from services.webhook_handler import handle_webhook
 from endpoints.users import router as users_router
 from endpoints.whatsapp import router as whatsapp_router
 from endpoints.bookings import router as bookings_router
+from endpoints.customers import router as customers_router
+from endpoints.hotels import router as hotels_router
+from endpoints.notifications import router as notifications_router
+from endpoints.admin import router as admin_router
+from endpoints.chat import router as chat_router
 
 set_tracing_disabled(disabled=True)
 
@@ -25,6 +35,16 @@ async def lifespan(app: FastAPI):
     await connect_db()
     await create_indexes()
     print(">>> MongoDB connected & indexes created")
+
+    # Pre-warm the WhatsApp Calling greeting so the first incoming call doesn't
+    # pay TTS synthesis latency on top of ICE handshake time.
+    try:
+        from services.wa_calling import _get_greeting_pcm
+        import asyncio as _asyncio
+        _asyncio.create_task(_get_greeting_pcm())
+    except Exception as e:
+        print(f">>> Greeting pre-warm skipped: {e}")
+
     yield
     await close_db()
     print(">>> MongoDB connection closed")
@@ -34,7 +54,7 @@ app = FastAPI(title="The Grand Dine — Restaurant Booking Agent", lifespan=life
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,6 +63,11 @@ app.add_middleware(
 app.include_router(users_router)
 app.include_router(whatsapp_router)
 app.include_router(bookings_router)
+app.include_router(customers_router)
+app.include_router(hotels_router)
+app.include_router(notifications_router)
+app.include_router(admin_router)
+app.include_router(chat_router)
 
 
 # -- Root webhook (Meta may hit this path) ----------------------------------

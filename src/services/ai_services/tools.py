@@ -15,6 +15,8 @@ from crud import booking as booking_crud
 from models.booking import BookingCreate, BookedVia, BookingStatus, BookingType
 from models.room import RoomType, RoomInDB
 from services.ai_services.context import UserContext
+from services.push_notifications import send_push_notification
+from services.whatsapp import send_text_message
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -288,16 +290,32 @@ async def book_room(
             check_out_date=co,
             num_guests=num_guests,
             special_requests=special_requests,
-            booked_via=BookedVia.WHATSAPP,
+            booked_via=BookedVia(ctx.context.channel) if ctx.context.channel in BookedVia.__members__.values() else BookedVia.WHATSAPP,
         ),
         total,
     )
+
+    # --- Send push notification to admin mobile app ---
+    try:
+        await send_push_notification(
+            title="🍽️ New Booking!",
+            body=(
+                f"{booking.booking_id} — {num_guests} guests\n"
+                f"{hotel.name} | PKR {total:,.0f}"
+            ),
+            data={
+                "type": "new_booking",
+                "booking_id": booking.booking_id,
+            },
+        )
+    except Exception as e:
+        print(f">>> [Push] Error sending new-booking notification: {e}")
 
     room_display = room.display_name or room.room_number
     floor_sec = f"{room.floor} — {room.section}" if room.floor and room.section else ""
     label = _BOOKING_TYPE_LABELS.get(bt, booking_type)
 
-    return (
+    confirmation_text = (
         f"✅ Booking confirmed!\n\n"
         f"📋 ID: *{booking.booking_id}*\n"
         f"🍽️ {hotel.name}\n"
@@ -310,6 +328,22 @@ async def book_room(
         + (f"\n📝 {special_requests}" if special_requests else "") + "\n\n"
         f"Save your ID *{booking.booking_id}* for status checks."
     )
+
+    # --- Send WhatsApp confirmation to the customer ---
+    # Skip when the channel itself is WhatsApp (the agent's text reply
+    # IS the WhatsApp message in that case, so a second send would just
+    # duplicate). Requires the customer to have an open 24-hour service
+    # window with our number; outside that window Meta rejects free-form
+    # text and a template would be needed.
+    wa_number = (ctx.context.whatsapp_number or "").strip()
+    if ctx.context.channel != "whatsapp" and wa_number and wa_number.isdigit():
+        try:
+            await send_text_message(wa_number, confirmation_text)
+            print(f">>> [WA] Booking confirmation sent to {wa_number} for {booking.booking_id}")
+        except Exception as e:
+            print(f">>> [WA] Could not send booking confirmation to {wa_number}: {e}")
+
+    return confirmation_text
 
 
 @function_tool(strict_mode=False)
@@ -367,7 +401,46 @@ async def cancel_my_booking(
     if not await booking_crud.cancel_booking(db, bid):
         return f"Cannot cancel {bid}. Status: *{b.status.value.title()}*. Only pending/confirmed can be cancelled."
 
+    # --- Send push notification to admin mobile app ---
+    try:
+        await send_push_notification(
+            title="❌ Booking Cancelled",
+            body=(
+                f"{bid} — {b.num_guests} guests\n"
+                f"PKR {b.total_price:,.0f} | Cancelled by customer"
+            ),
+            data={
+                "type": "booking_cancelled",
+                "booking_id": bid,
+            },
+        )
+    except Exception as e:
+        print(f">>> [Push] Error sending cancellation notification: {e}")
+
     return f"Booking *{bid}* cancelled. 🔴\nNeed a new booking? I'm happy to help!"
+
+
+@function_tool(strict_mode=False)
+async def update_customer_info(
+    ctx: RunContextWrapper[UserContext],
+    full_name: Annotated[str, "Customer's full name"] = "",
+    email: Annotated[str, "Customer's email address (optional)"] = "",
+) -> str:
+    """Save the customer's name and/or email. Call after collecting this info."""
+    db = get_db()
+    customer = await customer_crud.upsert_customer(
+        db,
+        whatsapp_number=ctx.context.whatsapp_number,
+        full_name=full_name.strip(),
+        email=email.strip(),
+    )
+    parts = []
+    if full_name.strip():
+        parts.append(f"Name: *{customer.full_name}*")
+    if email.strip():
+        parts.append(f"Email: *{customer.email}*")
+    saved = ", ".join(parts) if parts else "No changes"
+    return f"✅ Info saved — {saved}"
 
 
 @function_tool(strict_mode=False)
