@@ -1,0 +1,43 @@
+# Version control
+.git
+.gitignore
+
+# Python and uv
+.venv
+.uv-cache
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+build
+dist
+
+# Tests and tooling caches
+.pytest_cache
+.hypothesis
+.tox
+.nox
+.ruff_cache
+.mypy_cache
+.coverage
+.coverage.*
+htmlcov
+
+# Secrets (the example file is safe to include)
+.env
+.env.*
+!.env.example
+
+# Local development files not needed by the image
+tests
+specs
+.specify
+.claude
+.vscode
+.idea
+backend
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3

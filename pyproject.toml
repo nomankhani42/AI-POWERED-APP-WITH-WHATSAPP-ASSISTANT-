@@ -1,22 +1,38 @@
 [project]
-name = "support-agent"
+name = "voice-agent"
 version = "0.1.0"
-description = "FastAPI-based support agent with WhatsApp Meta integration"
-requires-python = ">=3.11"
+description = "Voice calling agent (Meta API + Deepgram STT/TTS + OpenAI Agents SDK; Cartesia rollback)"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "pydantic>=2.0.0",
-    "motor>=3.6.0",
-    "python-dotenv>=1.0.0",
-    "httpx>=0.27.0",
-    "python-multipart>=0.0.9",
-    "openai-agents[voice,litellm]>=0.0.7",
-    "upstash-redis>=1.1.0",
-    "pymongo>=4.16.0",
-    "numpy>=2.4.3",
-    "pydub>=0.25.1",
-    "azure-cognitiveservices-speech>=1.40.0",
-    "bcrypt>=5.0.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic-settings>=2.4",
+    "openai-agents>=0.17.7",
+    "redis>=8.0.1",
+    "beanie>=2.1.0",
+    "deepgram-sdk>=7.4.0",
+    "cartesia>=3.3.0",
     "aiortc>=1.14.0",
+    "httpx>=0.28.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "pytest-asyncio>=1.4.0",
+    "fakeredis>=2.36.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/app"]
