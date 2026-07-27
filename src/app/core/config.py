@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     agent_model: str = "gpt-4.1"
     mongodb_db: str = "voice_agent"
     redis_url: str = "redis://localhost:6379/0"
-    session_ttl_seconds: int = 3600
+    session_ttl_seconds: int = 86400  # 1 day
     # Business-local timezone used by the agent when resolving today/tomorrow/relative dates.
     business_timezone: str = "Asia/Karachi"
 
