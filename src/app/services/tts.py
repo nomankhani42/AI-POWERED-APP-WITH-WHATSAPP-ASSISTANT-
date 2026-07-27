@@ -31,6 +31,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any
 
+import httpx
 from cartesia import AsyncCartesia, CartesiaError
 from deepgram import AsyncDeepgramClient
 from deepgram.speak.v1.types import SpeakV1Flushed, SpeakV1Text, SpeakV1Warning
@@ -39,6 +40,10 @@ from app.core.config import get_settings
 from app.services.media.types import SpeechChunk
 
 logger = logging.getLogger(__name__)
+
+_DEEPGRAM_SPEAK_URL = "https://api.deepgram.com/v1/speak"
+# Deepgram Speak accepts up to 2,000 characters per request; voice-note replies are short.
+_DEEPGRAM_SPEAK_MAX_CHARS = 1990
 
 # Stay below Deepgram Aura's 2,000-character limit for one Speak message.
 _DEEPGRAM_TEXT_CHUNK_CHARS = 1800
@@ -51,6 +56,55 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?])(?:\s+|$)")
 
 class TtsError(Exception):
     """Raised when the active TTS provider fails or errors mid-stream (FR-009)."""
+
+
+async def synthesize_to_ogg(
+    text: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> bytes:
+    """Synthesize ``text`` into a complete Ogg/Opus file for a WhatsApp voice reply.
+
+    The live-call path streams raw PCM chunks (``DeepgramTtsSession``); a WhatsApp voice
+    note instead needs a single encoded file in a format WhatsApp accepts, so this uses
+    Deepgram's Speak REST endpoint with Opus encoding (``audio/ogg``). Returns the audio
+    bytes; raises ``TtsError`` on provider/transport failure or empty audio.
+    """
+
+    text = (text or "").strip()
+    if not text:
+        raise TtsError("cannot synthesize empty text")
+    if len(text) > _DEEPGRAM_SPEAK_MAX_CHARS:
+        text = text[:_DEEPGRAM_SPEAK_MAX_CHARS]
+
+    settings = get_settings()
+    params = {"model": settings.deepgram_tts_model, "encoding": "opus"}
+    headers = {
+        "Authorization": f"Token {settings.deepgram_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async def _post(active: httpx.AsyncClient) -> httpx.Response:
+        return await active.post(
+            _DEEPGRAM_SPEAK_URL, params=params, headers=headers, json={"text": text}
+        )
+
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=30.0) as owned:
+                response = await _post(owned)
+        else:
+            response = await _post(client)
+    except httpx.HTTPError as exc:
+        raise TtsError(f"Deepgram Speak REST failed: {exc}") from exc
+
+    if response.is_error:
+        raise TtsError(
+            f"Deepgram Speak REST failed: HTTP {response.status_code} {response.text}"
+        )
+    if not response.content:
+        raise TtsError("Deepgram Speak REST returned no audio")
+    return response.content
 
 
 async def _iter_text(text_chunks: AsyncIterator[str] | str) -> AsyncIterator[str]:

@@ -67,6 +67,47 @@ async def test_inbound_text_produces_text_reply_to_sender(graph, stub_turn) -> N
     assert payload["text"]["body"] == "echo: any rooms tomorrow?"
 
 
+async def test_inbound_voice_transcribes_and_replies_with_voice(graph, stub_turn, monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    async def fake_download_media(media_id, *, client=None):
+        calls["download"] = media_id
+        return b"OGGaudio", "audio/ogg"
+
+    async def fake_transcribe_file(audio, *, mimetype="audio/ogg", client=None):
+        calls["transcribe"] = (audio, mimetype)
+        return "any rooms tomorrow?"
+
+    async def fake_synthesize_to_ogg(text, *, client=None):
+        calls["synthesize"] = text
+        return b"REPLYaudio"
+
+    async def fake_upload_media(content, mime_type, *, filename="reply.ogg", client=None):
+        calls["upload"] = (content, mime_type)
+        return "media.out.1"
+
+    monkeypatch.setattr(chat, "download_media", fake_download_media)
+    monkeypatch.setattr(chat.stt, "transcribe_file", fake_transcribe_file)
+    monkeypatch.setattr(chat.tts, "synthesize_to_ogg", fake_synthesize_to_ogg)
+    monkeypatch.setattr(chat, "upload_media", fake_upload_media)
+
+    await chat.process_message(
+        {"from": SENDER, "id": "wamid.V1", "timestamp": "1752566400", "type": "audio",
+         "audio": {"id": "media.in.1", "mime_type": "audio/ogg; codecs=opus", "voice": True}},
+        "15551234567",
+    )
+
+    # Transcribed the downloaded audio, synthesized the agent reply, replied as a voice note.
+    assert calls["download"] == "media.in.1"
+    assert calls["synthesize"] == "echo: any rooms tomorrow?"
+    assert calls["upload"] == (b"REPLYaudio", "audio/ogg")
+    assert len(graph) == 1
+    payload = graph[0]
+    assert payload["to"] == SENDER
+    assert payload["type"] == "audio"
+    assert payload["audio"] == {"id": "media.out.1"}
+
+
 async def test_room_type_list_payload_matches_contract(graph) -> None:
     caps = {RoomType.single: 1, RoomType.deluxe: 2, RoomType.family: 4}
     await whatsapp_messages.send_room_type_list(SENDER, caps)

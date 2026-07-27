@@ -28,6 +28,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from deepgram import AsyncDeepgramClient
 from deepgram.core.events import EventType
 
@@ -35,6 +36,8 @@ from app.core.config import get_settings
 from app.services.media.types import TranscriptSegment
 
 logger = logging.getLogger(__name__)
+
+_DEEPGRAM_PRERECORDED_URL = "https://api.deepgram.com/v1/listen"
 
 # Deepgram closes a Listen socket with NET-0001 after ~10 s without audio. WhatsApp's Opus
 # stream uses DTX, so a silent caller stops producing frames entirely — without KeepAlives
@@ -52,6 +55,62 @@ _ENDPOINT_IDLE_FINALIZE_S = 1.2
 
 class SttError(Exception):
     """Raised when the Deepgram STT provider fails, times out, or errors mid-stream (FR-009)."""
+
+
+async def transcribe_file(
+    audio: bytes,
+    *,
+    mimetype: str = "audio/ogg",
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Transcribe a complete audio file (e.g. a WhatsApp voice note) via Deepgram REST.
+
+    Unlike ``transcribe_stream`` (live-call websocket), an inbound voice message is a whole
+    file, so it goes to Deepgram's pre-recorded endpoint. Returns the transcript text, or ""
+    when nothing intelligible was said. Raises ``SttError`` on provider/transport failure.
+    """
+
+    if not audio:
+        return ""
+
+    settings = get_settings()
+    params = {
+        "model": settings.deepgram_model,
+        "smart_format": str(settings.stt_smart_format).lower(),
+        "language": settings.deepgram_language,
+    }
+    headers = {
+        "Authorization": f"Token {settings.deepgram_api_key}",
+        "Content-Type": mimetype or "application/octet-stream",
+    }
+
+    async def _post(active: httpx.AsyncClient) -> httpx.Response:
+        return await active.post(
+            _DEEPGRAM_PRERECORDED_URL, params=params, headers=headers, content=audio
+        )
+
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=30.0) as owned:
+                response = await _post(owned)
+        else:
+            response = await _post(client)
+    except httpx.HTTPError as exc:
+        raise SttError(f"Deepgram pre-recorded transcription failed: {exc}") from exc
+
+    if response.is_error:
+        raise SttError(
+            f"Deepgram pre-recorded transcription failed: HTTP {response.status_code} "
+            f"{response.text}"
+        )
+
+    try:
+        alternatives = response.json()["results"]["channels"][0]["alternatives"]
+        transcript = (alternatives[0].get("transcript") or "") if alternatives else ""
+    except (KeyError, IndexError, ValueError) as exc:
+        raise SttError(f"Deepgram pre-recorded response was malformed: {exc}") from exc
+
+    return transcript.strip()
 
 
 @dataclass(slots=True)

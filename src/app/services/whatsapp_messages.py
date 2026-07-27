@@ -91,6 +91,105 @@ async def send_text(
     return await _post_message(payload, client=client)
 
 
+async def download_media(
+    media_id: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[bytes, str]:
+    """Download an inbound media object (e.g. a voice note) by its media id.
+
+    Two Graph calls: resolve ``GET /<media_id>`` to a short-lived download URL, then GET
+    that URL (both require the app's Bearer token — the URL host is ``lookaside.fbsbx.com``).
+    Returns ``(content_bytes, mime_type)``.
+    """
+
+    settings = get_settings()
+    base = f"https://graph.facebook.com/{settings.graph_api_version}"
+    headers = {"Authorization": f"Bearer {settings.whatsapp_token}"}
+
+    async def _fetch(active: httpx.AsyncClient) -> tuple[bytes, str]:
+        meta_resp = await active.get(f"{base}/{media_id}", headers=headers)
+        if meta_resp.is_error:
+            raise WhatsAppMessageError(
+                f"media metadata fetch failed for {media_id}: "
+                f"HTTP {meta_resp.status_code} {meta_resp.text}"
+            )
+        meta = meta_resp.json()
+        url = meta.get("url")
+        mime = meta.get("mime_type", "")
+        if not url:
+            raise WhatsAppMessageError(f"media {media_id} had no download url")
+        content_resp = await active.get(url, headers=headers, follow_redirects=True)
+        if content_resp.is_error:
+            raise WhatsAppMessageError(
+                f"media download failed for {media_id}: HTTP {content_resp.status_code}"
+            )
+        return content_resp.content, mime
+
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=30.0) as owned:
+                return await _fetch(owned)
+        return await _fetch(client)
+    except httpx.HTTPError as exc:
+        raise WhatsAppMessageError(f"media download failed for {media_id}: {exc}") from exc
+
+
+async def upload_media(
+    content: bytes,
+    mime_type: str,
+    *,
+    filename: str = "reply.ogg",
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Upload media bytes to ``/<phone_id>/media`` and return the reusable media id."""
+
+    settings = get_settings()
+    url = (
+        f"https://graph.facebook.com/{settings.graph_api_version}"
+        f"/{settings.whatsapp_phone_id}/media"
+    )
+    headers = {"Authorization": f"Bearer {settings.whatsapp_token}"}
+    files = {"file": (filename, content, mime_type)}
+    data = {"messaging_product": "whatsapp", "type": mime_type}
+
+    async def _upload(active: httpx.AsyncClient) -> str:
+        resp = await active.post(url, headers=headers, data=data, files=files)
+        if resp.is_error:
+            raise WhatsAppMessageError(
+                f"media upload failed: HTTP {resp.status_code} {resp.text}"
+            )
+        media_id = resp.json().get("id")
+        if not media_id:
+            raise WhatsAppMessageError("media upload returned no id")
+        return media_id
+
+    try:
+        if client is None:
+            async with httpx.AsyncClient(timeout=30.0) as owned:
+                return await _upload(owned)
+        return await _upload(client)
+    except httpx.HTTPError as exc:
+        raise WhatsAppMessageError(f"media upload failed: {exc}") from exc
+
+
+async def send_audio(
+    to: str,
+    media_id: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Send an uploaded audio media object back to the guest as a voice reply."""
+
+    payload: dict[str, Any] = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "audio",
+        "audio": {"id": media_id},
+    }
+    return await _post_message(payload, client=client)
+
+
 async def send_room_type_list(
     to: str,
     room_types: Mapping[RoomType, int],
